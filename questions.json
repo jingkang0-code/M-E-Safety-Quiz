@@ -1,104 +1,52 @@
 [
   {
-    "q":"Why must extension cords be fully uncoiled?",
-    "opts":["Prevent tangling","Reduce resistance","Prevent overheating","Improve speed"],
-    "answer":2
+    "q": "According to the CNV safety message, why did some serious safety incidents occur during routine operations?",
+    "opts": [
+      "Lack of advanced equipment",
+      "Urgent operational demands",
+      "Weak risk awareness due to familiarity and assumptions",
+      "Insufficient manpower"
+    ],
+    "answer": 2
   },
   {
-    "q":"Where should charging devices not be placed?",
-    "opts":["Metal table","Near combustibles","Plastic box","Vent area"],
-    "answer":1
+    "q": "What is the primary purpose of standards in maintaining safety?",
+    "opts": [
+      "To increase operational speed",
+      "To provide flexibility in execution",
+      "To set clear direction and common expectations",
+      "To reduce supervision requirements"
+    ],
+    "answer": 2
   },
   {
-    "q":"What increases electrical hazard risk?",
-    "opts":["Dry air","Moisture","Cold air","Dim light"],
-    "answer":1
+    "q": "What should supervisors and operators do when conditions change during operations?",
+    "opts": [
+      "Proceed to maintain schedule",
+      "Rely on experience to adjust",
+      "Pause and reassess when circumstances change",
+      "Wait for written instructions"
+    ],
+    "answer": 2
   },
   {
-    "q":"What worsens short-circuit risk?",
-    "opts":["Cool air","Dust buildup","Low voltage","Shade"],
-    "answer":1
+    "q": "How do leaders reinforce safety according to the CNV message?",
+    "opts": [
+      "By enforcing rules only during audits",
+      "By prioritising mission completion over safety",
+      "By role modelling safe behaviours and setting boundaries",
+      "By delegating safety responsibility"
+    ],
+    "answer": 2
   },
   {
-    "q":"Why replace faulty outlets immediately?",
-    "opts":["High usage","Ugly to see","Shock/fire risk","Short lifespan"],
-    "answer":2
-  },
-  {
-    "q":"Why avoid unattended charging?",
-    "opts":["Charges faster","Prevents overload","Fire risk if fault occurs","Keeps warranty"],
-    "answer":2
-  },
-  {
-    "q":"Safe extension-cord practice?",
-    "opts":["Use cheap cords","Overload adaptors","Use safety-marked cords","Hide under rug"],
-    "answer":2
-  },
-  {
-    "q":"Main cause of small electrical fires?",
-    "opts":["Air purifiers","Overloaded/damaged cords","Low battery","USB hubs"],
-    "answer":1
-  },
-  {
-    "q":"Risk of using the wrong charger?",
-    "opts":["Slower device","Battery overheating","Fast charging","Higher bill"],
-    "answer":1
-  },
-  {
-    "q":"Why unplug appliances before leaving?",
-    "opts":["Avoid overcharge","Reduce fire risk","Prevent dust","Free space"],
-    "answer":1
-  },
-
-  {
-    "q":"How often are fire drills required?",
-    "opts":["Once yearly","Twice yearly","Every quarter","Only during fire"],
-    "answer":1
-  },
-  {
-    "q":"Main purpose of fire drills?",
-    "opts":["Test speakers","Check building","Test readiness","Train wardens"],
-    "answer":2
-  },
-  {
-    "q":"What should occupants do when alarm sounds?",
-    "opts":["Pack items","Continue work","Evacuate at once","Wait for msg"],
-    "answer":2
-  },
-  {
-    "q":"What must be turned off before evacuation?",
-    "opts":["Aircon","Workspace power","Exit lights","Computers only"],
-    "answer":1
-  },
-  {
-    "q":"Who do occupants report to at mustering?",
-    "opts":["Security","Technician","Building Fire Officer","Supervisor"],
-    "answer":2
-  },
-  {
-    "q":"Alarm activation sends signal to:",
-    "opts":["SCDF only","Wardens only","Command Post & Guard House","All PCs"],
-    "answer":2
-  },
-  {
-    "q":"How can occupants support fire protection?",
-    "opts":["Do monthly checks","Ensure equipment unblocked","Switch off alarms","Ignore defects"],
-    "answer":1
-  },
-
-  {
-    "q":"Which extinguisher is used for electrical fires?",
-    "opts":["Water","Foam","CO₂","Wet Chemical"],
-    "answer":2
-  },
-  {
-    "q":"Foam extinguishers are effective for:",
-    "opts":["Wood/paper","Live electrical","Flammable liquids","Cooking oils"],
-    "answer":2
-  },
-  {
-    "q":"Best extinguisher for kitchen oil fires?",
-    "opts":["Dry Powder","Foam","Water","Wet Chemical"],
-    "answer":3
+    "q": "Why are daily habits critical to sustaining safety?",
+    "opts": [
+      "They reduce the need for standards",
+      "They ensure safety only during emergencies",
+      "They shape instincts and keep safe behaviour consistent",
+      "They replace supervision requirements"
+    ],
+    "answer": 2
   }
 ]
