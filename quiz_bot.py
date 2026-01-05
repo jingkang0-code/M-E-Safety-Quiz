@@ -8,7 +8,7 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
 QUESTIONS_PATH = pathlib.Path("questions.json")
 
 GROUP_QUIZ_LEN = 5
-GROUP_Q_OPEN_PERIOD = 10  # seconds
+GROUP_Q_OPEN_PERIOD = 12  # seconds
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -49,16 +49,25 @@ def display_name(user) -> str:
 
 def format_scoreboard(scores: dict) -> str:
     rows = [(v["name"], int(v["score"])) for v in scores.values()]
-    # bottom scores first
-    rows.sort(key=lambda x: (x[1], x[0].lower()))
 
     if not rows:
         return "🏁 Results\nNo scores recorded."
 
-    out = ["🏁 Results (Bottom 10)"]
-    for i, (name, score) in enumerate(rows[:10], 1):
+    # 1) Sort by score ASC (lowest first)
+    rows.sort(key=lambda x: (x[1], x[0].lower()))
+
+    # 2) Take bottom 10
+    bottom_10 = rows[:10]
+
+    # 3) Reverse display so lowest score is LAST
+    bottom_10.reverse()
+
+    out = ["🏁 Results (Bottom 10 — lowest score at bottom)"]
+    for i, (name, score) in enumerate(bottom_10, 1):
         out.append(f"{i}. {name} — {score}")
+
     return "\n".join(out)
+
 
 
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -238,4 +247,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
