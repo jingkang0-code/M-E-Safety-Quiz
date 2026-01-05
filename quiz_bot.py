@@ -207,6 +207,7 @@ async def force_advance_job(context: ContextTypes.DEFAULT_TYPE):
 
 async def on_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ans = update.poll_answer
+    uid = str(ans.user.id)
     chosen = ans.option_ids[0] if ans.option_ids else None
 
     meta = POLL_META.get(ans.poll_id)
@@ -218,11 +219,14 @@ async def on_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not s:
         return
 
+    # ✅ Always register the user once they answered at least one question
+    entry = s["scores"].setdefault(uid, {"name": display_name(ans.user), "score": 0})
+    entry["name"] = display_name(ans.user)  # keep name fresh
+
+    # ✅ Only add score if correct
     if chosen == correct:
-        uid = str(ans.user.id)
-        entry = s["scores"].setdefault(uid, {"name": display_name(ans.user), "score": 0})
-        entry["name"] = display_name(ans.user)
         entry["score"] += 1
+
 
 def main():
     if not BOT_TOKEN:
@@ -247,5 +251,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
