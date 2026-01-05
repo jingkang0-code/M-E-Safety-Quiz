@@ -1,3 +1,24 @@
+import sqlite3
+
+DB_PATH = "leaderboard.db"
+
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS scores (
+        chat_id INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        username TEXT,
+        score INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (chat_id, user_id)
+    )
+    """)
+    conn.commit()
+    conn.close()
+
+
+
 import json, pathlib, random, datetime, logging
 from collections import defaultdict
 from telegram import Update, Poll
@@ -180,6 +201,7 @@ print("Done.")
 
 if __name__ == "__main__":
     main()
+
 
 
 
