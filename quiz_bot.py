@@ -15,12 +15,13 @@ from telegram.ext import (
 )
 
 # ===================== CONFIG =====================
-# IMPORTANT: Do NOT hardcode your token in GitHub.
-# Set BOT_TOKEN as an environment variable in your host (Railway/Render/etc.).
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
-
 QUESTIONS_PATH = pathlib.Path("questions.json")
 SCORES_PATH = pathlib.Path("scores.json")
+
+# Group session settings
+GROUP_QUIZ_LEN = 5               # number of questions per group session
+GROUP_Q_OPEN_PERIOD = 10         # seconds each poll stays open (auto closes)
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)s: %(message)s",
@@ -57,16 +58,25 @@ def load_questions():
 QUIZ = load_questions()
 
 # ===================== STATE =====================
-# Private mode (DM): per-user sequential quiz
-USER_STATE = defaultdict(dict)  # key: user_id -> state dict
-POLL_TO_PRIVATE = {}  # poll_id -> (user_id, qid, correct_option_id)
+# DM sequential quiz state
+USER_STATE = defaultdict(dict)          # user_id -> state dict
+POLL_TO_PRIVATE = {}                   # poll_id -> (user_id, qid, correct_option_id)
 
-# Group mode leaderboard:
-# poll_id -> {"chat_id": int, "correct_option_id": int}
+# Group polling mapping:
+# poll_id -> {"chat_id": int, "correct_option_id": int, "session_id": str}
 POLL_TO_GROUP = {}
 
-# ===================== SCORE STORAGE =====================
-# Stored as:
+# Active group sessions:
+# chat_id -> {
+#   "session_id": str,
+#   "qids": [int...],
+#   "idx": int,
+#   "scores": {user_id(str): {"name": str, "score": int}},
+# }
+GROUP_SESSIONS = {}
+
+# ===================== SCORE STORAGE (optional cumulative leaderboard) =====================
+# scores.json structure:
 # {
 #   "<chat_id>": {
 #       "<user_id>": {"name": "display name", "score": 12}
@@ -84,18 +94,17 @@ def _save_scores(scores: dict) -> None:
     SCORES_PATH.write_text(json.dumps(scores, ensure_ascii=False, indent=2), encoding="utf-8")
 
 def _display_name_from_user(user) -> str:
-    # Prefer @username, else full name
     if getattr(user, "username", None):
         return f"@{user.username}"
     name = f"{getattr(user, 'first_name', '')} {getattr(user, 'last_name', '')}".strip()
     return name if name else str(getattr(user, "id", "unknown"))
 
-def add_group_point(chat_id: int, user, delta: int = 1) -> None:
+def add_group_point_cumulative(chat_id: int, user, delta: int = 1) -> None:
     scores = _load_scores()
     c = scores.setdefault(str(chat_id), {})
     uid = str(user.id)
     entry = c.setdefault(uid, {"name": _display_name_from_user(user), "score": 0})
-    entry["name"] = _display_name_from_user(user)  # keep updated
+    entry["name"] = _display_name_from_user(user)
     entry["score"] = int(entry.get("score", 0)) + delta
     _save_scores(scores)
 
@@ -116,20 +125,34 @@ def reset_group_scores(chat_id: int) -> None:
 def new_order():
     return random.sample(range(len(QUIZ)), k=len(QUIZ))
 
+def _format_scoreboard(title: str, entries: dict, limit: int = 10) -> str:
+    """
+    entries: {user_id: {"name": str, "score": int}}
+    """
+    rows = [(v["name"], int(v["score"])) for v in entries.values()]
+    rows.sort(key=lambda x: (-x[1], x[0].lower()))
+    if not rows:
+        return f"{title}\nNo scores recorded."
+    lines = [title]
+    for i, (name, score) in enumerate(rows[:limit], start=1):
+        lines.append(f"{i}. {name} — {score}")
+    return "\n".join(lines)
+
+# ===================== COMMANDS =====================
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Ready.\n"
-        "/quiz - start quiz (DM = full quiz, Group = single question)\n"
+        "/quiz - start quiz (DM: full quiz, Group: 5 questions)\n"
         "/retest - retry only wrong ones (DM only)\n"
         "/score - last DM quiz score\n"
-        "/leaderboard - group leaderboard\n"
-        "/reset_scores - reset group leaderboard (admin-controlled by you if you want)\n"
+        "/leaderboard - cumulative group leaderboard\n"
+        "/reset_scores - reset cumulative group leaderboard\n"
         "/help - this help"
     )
 
 help_cmd = start_cmd
 
-# ===================== DM MODE COMMANDS =====================
+# ===================== DM MODE =====================
 async def score_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = update.effective_user.id
     st = USER_STATE.get(u, {})
@@ -140,11 +163,6 @@ async def score_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("No attempts yet. Use /quiz to start (in DM).")
 
 async def quiz_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Behaviour:
-    - If private chat: full sequential quiz (your original design).
-    - If group chat: send ONE question to group (leaderboard mode).
-    """
     if not QUIZ:
         await update.message.reply_text("❌ questions.json invalid. Fix it and redeploy.")
         return
@@ -152,34 +170,31 @@ async def quiz_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     user = update.effective_user
 
-    # GROUP MODE: one question to entire chat
+    # ===================== GROUP MODE (5-question session) =====================
     if chat.type != "private":
-        qid = random.randrange(len(QUIZ))
-        q = QUIZ[qid]
+        # Block if session already running
+        if chat.id in GROUP_SESSIONS:
+            await update.message.reply_text("A group quiz session is already in progress. Please wait for it to finish.")
+            return
 
-        idxs = list(range(len(q["opts"])))
-        random.shuffle(idxs)
-        opts = [q["opts"][i] for i in idxs]
-        correct_option_id = idxs.index(q["answer"])
+        session_id = f"{chat.id}:{int(datetime.datetime.now().timestamp())}"
+        qcount = min(GROUP_QUIZ_LEN, len(QUIZ))
+        qids = random.sample(range(len(QUIZ)), k=qcount)
 
-        msg = await context.bot.send_poll(
-            chat_id=chat.id,
-            question=q["q"],
-            options=opts,
-            type=Poll.QUIZ,
-            correct_option_id=correct_option_id,
-            is_anonymous=False,
-        )
-        POLL_TO_GROUP[msg.poll.id] = {
-            "chat_id": chat.id,
-            "correct_option_id": correct_option_id,
+        GROUP_SESSIONS[chat.id] = {
+            "session_id": session_id,
+            "qids": qids,
+            "idx": 0,
+            "scores": {},  # session-only scoreboard
         }
-        await update.message.reply_text("Question posted. Use /leaderboard anytime.")
+
+        await update.message.reply_text(f"Starting group quiz: {qcount} questions. Each question is open for {GROUP_Q_OPEN_PERIOD}s.")
+        await _send_next_group_question(context, chat.id)
         return
 
-    # PRIVATE MODE: full quiz per user (your current flow)
-    u = user.id
-    USER_STATE[u] = {
+    # ===================== PRIVATE MODE (full quiz) =====================
+    uid = user.id
+    USER_STATE[uid] = {
         "order": new_order(),
         "idx": 0,
         "wrong_ids": set(),
@@ -187,22 +202,21 @@ async def quiz_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "total": len(QUIZ),
         "mode": "full",
     }
-    await send_next_private(update, context, u)
+    await send_next_private(update, context, uid)
 
 async def retest_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Retest only supported in private flow
     if update.effective_chat.type != "private":
         await update.message.reply_text("Retest is DM-only. Please DM the bot to use /retest.")
         return
 
-    u = update.effective_user.id
-    prev_wrong = list(USER_STATE.get(u, {}).get("wrong_ids", []))
+    uid = update.effective_user.id
+    prev_wrong = list(USER_STATE.get(uid, {}).get("wrong_ids", []))
     if not prev_wrong:
         await update.message.reply_text("✅ Nothing to retest. Run /quiz first.")
         return
 
     random.shuffle(prev_wrong)
-    USER_STATE[u] = {
+    USER_STATE[uid] = {
         "order": prev_wrong,
         "idx": 0,
         "wrong_ids": set(),
@@ -210,7 +224,7 @@ async def retest_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "total": len(prev_wrong),
         "mode": "retest",
     }
-    await send_next_private(update, context, u)
+    await send_next_private(update, context, uid)
 
 async def send_next_private(update_or_ctx, context: ContextTypes.DEFAULT_TYPE, uid: int):
     st = USER_STATE[uid]
@@ -246,46 +260,120 @@ async def send_next_private(update_or_ctx, context: ContextTypes.DEFAULT_TYPE, u
     )
     POLL_TO_PRIVATE[msg.poll.id] = (uid, qid, correct_option_id)
 
+# ===================== GROUP MODE HELPERS =====================
+async def _send_next_group_question(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
+    session = GROUP_SESSIONS.get(chat_id)
+    if not session:
+        return
+
+    idx = session["idx"]
+    qids = session["qids"]
+
+    # Finish session
+    if idx >= len(qids):
+        # post session scoreboard
+        scoreboard = _format_scoreboard("🏁 Session Results (Top 10)", session["scores"], limit=10)
+        await context.bot.send_message(chat_id=chat_id, text=scoreboard)
+        await context.bot.send_message(chat_id=chat_id, text="Use /leaderboard to view cumulative scores.")
+        # clear session
+        GROUP_SESSIONS.pop(chat_id, None)
+        return
+
+    qid = qids[idx]
+    q = QUIZ[qid]
+
+    idxs = list(range(len(q["opts"])))
+    random.shuffle(idxs)
+    opts = [q["opts"][i] for i in idxs]
+    correct_option_id = idxs.index(q["answer"])
+
+    msg = await context.bot.send_poll(
+        chat_id=chat_id,
+        question=f"Q{idx+1}/{len(qids)}: {q['q']}",
+        options=opts,
+        type=Poll.QUIZ,
+        correct_option_id=correct_option_id,
+        is_anonymous=False,
+        open_period=GROUP_Q_OPEN_PERIOD,   # auto close after N seconds
+    )
+
+    POLL_TO_GROUP[msg.poll.id] = {
+        "chat_id": chat_id,
+        "correct_option_id": correct_option_id,
+        "session_id": session["session_id"],
+    }
+
+    # schedule next question after poll closes (+1s buffer)
+    context.job_queue.run_once(
+        _group_next_question_job,
+        when=GROUP_Q_OPEN_PERIOD + 1,
+        data={"chat_id": chat_id, "session_id": session["session_id"]},
+        name=f"group_next_{chat_id}_{session['session_id']}_{idx}",
+    )
+
+async def _group_next_question_job(context: ContextTypes.DEFAULT_TYPE):
+    data = context.job.data or {}
+    chat_id = data.get("chat_id")
+    session_id = data.get("session_id")
+
+    session = GROUP_SESSIONS.get(chat_id)
+    # session might have ended or restarted
+    if not session or session.get("session_id") != session_id:
+        return
+
+    session["idx"] += 1
+    await _send_next_group_question(context, chat_id)
+
 # ===================== GROUP LEADERBOARD COMMANDS =====================
 async def leaderboard_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     rows = get_group_leaderboard(chat_id, limit=10)
     if not rows:
-        await update.message.reply_text("No scores yet. Use /quiz in this group to post a question.")
+        await update.message.reply_text("No cumulative scores yet. Run /quiz in this group and answer questions.")
         return
 
-    lines = ["🏆 Leaderboard (Top 10)"]
+    lines = ["🏆 Cumulative Leaderboard (Top 10)"]
     for i, (name, score) in enumerate(rows, start=1):
         lines.append(f"{i}. {name} — {score}")
     await update.message.reply_text("\n".join(lines))
 
 async def reset_scores_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Minimal version: anyone can reset.
-    # If you want admin-only, tell me and I’ll add Telegram admin checks.
     chat = update.effective_chat
     if chat.type == "private":
-        await update.message.reply_text("This resets group leaderboard only. Use it in a group chat.")
+        await update.message.reply_text("This resets group cumulative leaderboard only. Use it in a group chat.")
         return
 
     reset_group_scores(chat.id)
-    await update.message.reply_text("✅ Group leaderboard reset.")
+    await update.message.reply_text("✅ Cumulative group leaderboard reset.")
 
-# ===================== POLL ANSWERS HANDLER =====================
+# ===================== POLL ANSWERS =====================
 async def on_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ans = update.poll_answer
     chosen = ans.option_ids[0] if ans.option_ids else None
 
-    # 1) GROUP MODE scoring
+    # GROUP MODE scoring
     meta = POLL_TO_GROUP.get(ans.poll_id)
     if meta:
-        if chosen == meta["correct_option_id"]:
-            add_group_point(meta["chat_id"], ans.user, delta=1)
+        chat_id = meta["chat_id"]
+        correct = meta["correct_option_id"]
+        session_id = meta["session_id"]
+
+        session = GROUP_SESSIONS.get(chat_id)
+        # only count if still same session
+        if session and session.get("session_id") == session_id and chosen == correct:
+            uid = str(ans.user.id)
+            entry = session["scores"].setdefault(uid, {"name": _display_name_from_user(ans.user), "score": 0})
+            entry["name"] = _display_name_from_user(ans.user)
+            entry["score"] += 1
+
+            # also update cumulative leaderboard (optional)
+            add_group_point_cumulative(chat_id, ans.user, delta=1)
+
         return
 
-    # 2) PRIVATE MODE scoring (your original flow)
+    # PRIVATE MODE scoring
     entry = POLL_TO_PRIVATE.pop(ans.poll_id, None)
     if entry is None:
-        # Bot restarted or poll mapping lost; ignore safely.
         return
 
     uid, qid, correct = entry
@@ -324,7 +412,7 @@ def main():
 
     app.add_handler(PollAnswerHandler(on_poll_answer))
 
-    print("✅ Bot running... open Telegram and DM /start to your bot.")
+    print("✅ Bot running...")
     app.run_polling()
 
 if __name__ == "__main__":
