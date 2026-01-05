@@ -49,13 +49,17 @@ def display_name(user) -> str:
 
 def format_scoreboard(scores: dict) -> str:
     rows = [(v["name"], int(v["score"])) for v in scores.values()]
-    rows.sort(key=lambda x: (-x[1], x[0].lower()))
+    # bottom scores first
+    rows.sort(key=lambda x: (x[1], x[0].lower()))
+
     if not rows:
         return "🏁 Results\nNo scores recorded."
-    out = ["🏁 Results (Top 10)"]
+
+    out = ["🏁 Results (Bottom 10)"]
     for i, (name, score) in enumerate(rows[:10], 1):
         out.append(f"{i}. {name} — {score}")
     return "\n".join(out)
+
 
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -234,3 +238,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
