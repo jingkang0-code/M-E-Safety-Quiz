@@ -17,6 +17,34 @@ def init_db():
     conn.commit()
     conn.close()
 
+def add_point(chat_id: int, user_id: int, username: str):
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("""
+    INSERT INTO scores (chat_id, user_id, username, score)
+    VALUES (?, ?, ?, 1)
+    ON CONFLICT(chat_id, user_id)
+    DO UPDATE SET score = score + 1, username = excluded.username
+    """, (chat_id, user_id, username))
+    conn.commit()
+    conn.close()
+
+def get_top(chat_id: int, limit: int = 10):
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("""
+    SELECT username, score FROM scores
+    WHERE chat_id = ?
+    ORDER BY score DESC, username ASC
+    LIMIT ?
+    """, (chat_id, limit))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+ACTIVE_POLLS = {}  # poll_id -> {"chat_id": int, "correct_option_id": int}
+
+
 
 
 import json, pathlib, random, datetime, logging
@@ -201,6 +229,7 @@ print("Done.")
 
 if __name__ == "__main__":
     main()
+
 
 
 
