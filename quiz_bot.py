@@ -21,7 +21,7 @@ SCORES_PATH = pathlib.Path("scores.json")
 
 # Group session settings
 GROUP_QUIZ_LEN = 5               # number of questions per group session
-GROUP_Q_OPEN_PERIOD = 10         # seconds each poll stays open (auto closes)
+GROUP_Q_OPEN_PERIOD = 10         # seconds each poll stays open (AUTO-NEXT after this)
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)s: %(message)s",
@@ -54,7 +54,6 @@ def load_questions():
         print("❌ Failed to parse questions.json:", e)
         return None
 
-
 QUIZ = load_questions()
 
 # ===================== STATE =====================
@@ -62,8 +61,7 @@ QUIZ = load_questions()
 USER_STATE = defaultdict(dict)          # user_id -> state dict
 POLL_TO_PRIVATE = {}                   # poll_id -> (user_id, qid, correct_option_id)
 
-# Group polling mapping:
-# poll_id -> {"chat_id": int, "correct_option_id": int, "session_id": str}
+# Group scoring: poll_id -> {"chat_id": int, "correct_option_id": int, "session_id": str}
 POLL_TO_GROUP = {}
 
 # Active group sessions:
@@ -72,16 +70,11 @@ POLL_TO_GROUP = {}
 #   "qids": [int...],
 #   "idx": int,
 #   "scores": {user_id(str): {"name": str, "score": int}},
+#   "advance_token": str   # prevents double-advance
 # }
 GROUP_SESSIONS = {}
 
-# ===================== SCORE STORAGE (optional cumulative leaderboard) =====================
-# scores.json structure:
-# {
-#   "<chat_id>": {
-#       "<user_id>": {"name": "display name", "score": 12}
-#   }
-# }
+# ===================== SCORE STORAGE (cumulative leaderboard optional) =====================
 def _load_scores() -> dict:
     if not SCORES_PATH.exists():
         return {}
@@ -126,9 +119,6 @@ def new_order():
     return random.sample(range(len(QUIZ)), k=len(QUIZ))
 
 def _format_scoreboard(title: str, entries: dict, limit: int = 10) -> str:
-    """
-    entries: {user_id: {"name": str, "score": int}}
-    """
     rows = [(v["name"], int(v["score"])) for v in entries.values()]
     rows.sort(key=lambda x: (-x[1], x[0].lower()))
     if not rows:
@@ -142,7 +132,7 @@ def _format_scoreboard(title: str, entries: dict, limit: int = 10) -> str:
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Ready.\n"
-        "/quiz - start quiz (DM: full quiz, Group: 5 questions)\n"
+        "/quiz - start quiz (DM: full quiz, Group: 5 questions timed)\n"
         "/retest - retry only wrong ones (DM only)\n"
         "/score - last DM quiz score\n"
         "/leaderboard - cumulative group leaderboard\n"
@@ -170,9 +160,8 @@ async def quiz_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     user = update.effective_user
 
-    # ===================== GROUP MODE (5-question session) =====================
+    # ===================== GROUP MODE (timed 5-question session) =====================
     if chat.type != "private":
-        # Block if session already running
         if chat.id in GROUP_SESSIONS:
             await update.message.reply_text("A group quiz session is already in progress. Please wait for it to finish.")
             return
@@ -185,10 +174,15 @@ async def quiz_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "session_id": session_id,
             "qids": qids,
             "idx": 0,
-            "scores": {},  # session-only scoreboard
+            "scores": {},
+            "advance_token": "",  # will be set per question
         }
 
-        await update.message.reply_text(f"Starting group quiz: {qcount} questions. Each question is open for {GROUP_Q_OPEN_PERIOD}s.")
+        await update.message.reply_text(
+            f"Starting group quiz: {qcount} questions.\n"
+            f"Each question auto-advances after {GROUP_Q_OPEN_PERIOD}s."
+        )
+
         await _send_next_group_question(context, chat.id)
         return
 
@@ -260,7 +254,7 @@ async def send_next_private(update_or_ctx, context: ContextTypes.DEFAULT_TYPE, u
     )
     POLL_TO_PRIVATE[msg.poll.id] = (uid, qid, correct_option_id)
 
-# ===================== GROUP MODE HELPERS =====================
+# ===================== GROUP MODE HELPERS (TIMED ADVANCE) =====================
 async def _send_next_group_question(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
     session = GROUP_SESSIONS.get(chat_id)
     if not session:
@@ -269,13 +263,11 @@ async def _send_next_group_question(context: ContextTypes.DEFAULT_TYPE, chat_id:
     idx = session["idx"]
     qids = session["qids"]
 
-    # Finish session
+    # Finish
     if idx >= len(qids):
-        # post session scoreboard
         scoreboard = _format_scoreboard("🏁 Session Results (Top 10)", session["scores"], limit=10)
         await context.bot.send_message(chat_id=chat_id, text=scoreboard)
         await context.bot.send_message(chat_id=chat_id, text="Use /leaderboard to view cumulative scores.")
-        # clear session
         GROUP_SESSIONS.pop(chat_id, None)
         return
 
@@ -287,6 +279,11 @@ async def _send_next_group_question(context: ContextTypes.DEFAULT_TYPE, chat_id:
     opts = [q["opts"][i] for i in idxs]
     correct_option_id = idxs.index(q["answer"])
 
+    # create an advance token for this question to prevent double firing
+    advance_token = f"{session['session_id']}:{idx}"
+    session["advance_token"] = advance_token
+
+    # send timed poll
     msg = await context.bot.send_poll(
         chat_id=chat_id,
         question=f"Q{idx+1}/{len(qids)}: {q['q']}",
@@ -294,7 +291,7 @@ async def _send_next_group_question(context: ContextTypes.DEFAULT_TYPE, chat_id:
         type=Poll.QUIZ,
         correct_option_id=correct_option_id,
         is_anonymous=False,
-        open_period=GROUP_Q_OPEN_PERIOD,   # auto close after N seconds
+        open_period=GROUP_Q_OPEN_PERIOD,  # poll auto-closes after N seconds
     )
 
     POLL_TO_GROUP[msg.poll.id] = {
@@ -303,22 +300,25 @@ async def _send_next_group_question(context: ContextTypes.DEFAULT_TYPE, chat_id:
         "session_id": session["session_id"],
     }
 
-    # schedule next question after poll closes (+1s buffer)
+    # Schedule auto-advance after time (no dependency on anyone answering)
     context.job_queue.run_once(
-        _group_next_question_job,
+        _group_force_advance_job,
         when=GROUP_Q_OPEN_PERIOD + 1,
-        data={"chat_id": chat_id, "session_id": session["session_id"]},
-        name=f"group_next_{chat_id}_{session['session_id']}_{idx}",
+        data={"chat_id": chat_id, "advance_token": advance_token},
+        name=f"group_force_advance_{chat_id}_{advance_token}",
     )
 
-async def _group_next_question_job(context: ContextTypes.DEFAULT_TYPE):
+async def _group_force_advance_job(context: ContextTypes.DEFAULT_TYPE):
     data = context.job.data or {}
     chat_id = data.get("chat_id")
-    session_id = data.get("session_id")
+    token = data.get("advance_token")
 
     session = GROUP_SESSIONS.get(chat_id)
-    # session might have ended or restarted
-    if not session or session.get("session_id") != session_id:
+    if not session:
+        return
+
+    # Only advance if this job corresponds to the current question
+    if session.get("advance_token") != token:
         return
 
     session["idx"] += 1
@@ -342,11 +342,10 @@ async def reset_scores_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if chat.type == "private":
         await update.message.reply_text("This resets group cumulative leaderboard only. Use it in a group chat.")
         return
-
     reset_group_scores(chat.id)
     await update.message.reply_text("✅ Cumulative group leaderboard reset.")
 
-# ===================== POLL ANSWERS =====================
+# ===================== POLL ANSWERS (SCORING ONLY) =====================
 async def on_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ans = update.poll_answer
     chosen = ans.option_ids[0] if ans.option_ids else None
@@ -359,16 +358,14 @@ async def on_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
         session_id = meta["session_id"]
 
         session = GROUP_SESSIONS.get(chat_id)
-        # only count if still same session
         if session and session.get("session_id") == session_id and chosen == correct:
             uid = str(ans.user.id)
             entry = session["scores"].setdefault(uid, {"name": _display_name_from_user(ans.user), "score": 0})
             entry["name"] = _display_name_from_user(ans.user)
             entry["score"] += 1
 
-            # also update cumulative leaderboard (optional)
+            # update cumulative leaderboard
             add_group_point_cumulative(chat_id, ans.user, delta=1)
-
         return
 
     # PRIVATE MODE scoring
@@ -410,6 +407,7 @@ def main():
     app.add_handler(CommandHandler("leaderboard", leaderboard_cmd))
     app.add_handler(CommandHandler("reset_scores", reset_scores_cmd))
 
+    # scoring only; progression is controlled by timer jobs
     app.add_handler(PollAnswerHandler(on_poll_answer))
 
     print("✅ Bot running...")
